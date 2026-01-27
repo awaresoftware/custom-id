@@ -1,0 +1,59 @@
+{
+    "name": "aware/custom-id",
+    "description": "A Laravel package for generating unique custom IDs with configurable character sets, lengths, and prefixes",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "laravel",
+        "custom-id",
+        "uuid-alternative",
+        "id-generation"
+    ],
+    "authors": [
+        {
+            "name": "Aware j.d.o.o.",
+            "email": "mirko@aware.studio"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "illuminate/support": "^11.0|^12.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0|^10.0",
+        "pestphp/pest": "^3.0",
+        "pestphp/pest-plugin-laravel": "^3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Aware\\CustomId\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Aware\\CustomId\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Aware\\CustomId\\CustomIdServiceProvider"
+            ],
+            "aliases": {
+                "CustomId": "Aware\\CustomId\\Facades\\CustomId"
+            }
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "scripts": {
+        "test": "vendor/bin/pest",
+        "test-coverage": "vendor/bin/pest --coverage"
+    }
+}
