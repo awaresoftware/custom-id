@@ -33,5 +33,10 @@ class CustomIdServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../config/custom-id.php' => config_path('custom-id.php'),
         ], 'custom-id-config');
+
+        // Publish users migration (optional)
+        $this->publishes([
+            __DIR__.'/../database/migrations/convert_users_table_to_custom_id.php.stub' => database_path('migrations/'.date('Y_m_d_His').'_convert_users_table_to_custom_id.php'),
+        ], 'custom-id-users-migration');
     }
 }

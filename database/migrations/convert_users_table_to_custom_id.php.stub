@@ -1,0 +1,456 @@
+<?php
+
+use Aware\CustomId\Services\IdentificationService;
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * The ID mapping from old integer IDs to new custom IDs.
+     */
+    protected array $idMapping = [];
+
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        // Build the ID mapping for existing users
+        $this->buildIdMapping();
+
+        // Update the users table
+        $this->convertUsersTable();
+
+        // Update related tables with foreign keys
+        $this->updateRelatedTables();
+    }
+
+    /**
+     * Build mapping of old integer IDs to new custom IDs.
+     */
+    protected function buildIdMapping(): void
+    {
+        $service = app(IdentificationService::class);
+        $users = DB::table('users')->select('id')->get();
+
+        $config = [
+            'length' => config('custom-id.users.length', config('custom-id.default_length', 8)),
+            'prefix' => config('custom-id.users.prefix', config('custom-id.default_prefix', '')),
+            'character_set' => config('custom-id.users.character_set', config('custom-id.character_set')),
+            'max_attempts' => config('custom-id.max_attempts', 10),
+        ];
+
+        $existingIds = [];
+
+        foreach ($users as $user) {
+            $newId = $service->generate(
+                'user',
+                fn (string $id) => in_array($id, $existingIds),
+                $config
+            );
+
+            $this->idMapping[$user->id] = $newId;
+            $existingIds[] = $newId;
+        }
+    }
+
+    /**
+     * Convert the users table ID column from integer to string.
+     */
+    protected function convertUsersTable(): void
+    {
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'sqlite') {
+            $this->convertUsersTableSqlite();
+        } else {
+            $this->convertUsersTableDefault();
+        }
+    }
+
+    /**
+     * Convert users table for MySQL/PostgreSQL.
+     */
+    protected function convertUsersTableDefault(): void
+    {
+        $driver = DB::connection()->getDriverName();
+
+        // Add temporary column for new ID
+        Schema::table('users', function (Blueprint $table) {
+            $table->string('custom_id', 36)->nullable()->after('id');
+        });
+
+        // Populate new IDs
+        foreach ($this->idMapping as $oldId => $newId) {
+            DB::table('users')
+                ->where('id', $oldId)
+                ->update(['custom_id' => $newId]);
+        }
+
+        // Generate IDs for any users without mapping (safety check)
+        $this->fillMissingCustomIds();
+
+        // Drop the old primary key
+        if ($driver === 'mysql') {
+            // MySQL: Remove auto_increment first, then drop primary
+            DB::statement('ALTER TABLE users MODIFY id BIGINT UNSIGNED NOT NULL');
+            DB::statement('ALTER TABLE users DROP PRIMARY KEY');
+        } elseif ($driver === 'pgsql') {
+            // PostgreSQL: Drop the primary key constraint
+            DB::statement('ALTER TABLE users DROP CONSTRAINT users_pkey');
+        }
+
+        // Drop old id column
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropColumn('id');
+        });
+
+        // Rename custom_id to id
+        Schema::table('users', function (Blueprint $table) {
+            $table->renameColumn('custom_id', 'id');
+        });
+
+        // Add primary key on new id column
+        Schema::table('users', function (Blueprint $table) {
+            $table->primary('id');
+        });
+    }
+
+    /**
+     * Convert users table for SQLite (requires table rebuild).
+     */
+    protected function convertUsersTableSqlite(): void
+    {
+        // Get the current table structure
+        $columns = Schema::getColumnListing('users');
+
+        // Create temporary table with new schema
+        Schema::create('users_new', function (Blueprint $table) use ($columns) {
+            $table->string('id', 36)->primary();
+
+            // Recreate other columns (basic types - adjust as needed)
+            foreach ($columns as $column) {
+                if ($column === 'id') {
+                    continue;
+                }
+
+                // Get column type info
+                $type = Schema::getColumnType('users', $column);
+
+                match ($type) {
+                    'string', 'text' => $table->string($column)->nullable(),
+                    'integer', 'bigint' => $table->bigInteger($column)->nullable(),
+                    'boolean' => $table->boolean($column)->nullable(),
+                    'datetime', 'timestamp' => $table->timestamp($column)->nullable(),
+                    default => $table->string($column)->nullable(),
+                };
+            }
+        });
+
+        // Copy data with new IDs
+        $users = DB::table('users')->get();
+
+        foreach ($users as $user) {
+            $data = (array) $user;
+            $oldId = $data['id'];
+            $data['id'] = $this->idMapping[$oldId] ?? $this->generateNewIdForUser($oldId);
+
+            DB::table('users_new')->insert($data);
+        }
+
+        // Drop old table and rename new one
+        Schema::drop('users');
+        Schema::rename('users_new', 'users');
+    }
+
+    /**
+     * Fill in custom IDs for any users that weren't in the initial mapping.
+     */
+    protected function fillMissingCustomIds(): void
+    {
+        $usersWithoutCustomId = DB::table('users')->whereNull('custom_id')->get();
+
+        if ($usersWithoutCustomId->isEmpty()) {
+            return;
+        }
+
+        $service = app(IdentificationService::class);
+        $config = [
+            'length' => config('custom-id.users.length', config('custom-id.default_length', 8)),
+            'prefix' => config('custom-id.users.prefix', config('custom-id.default_prefix', '')),
+            'character_set' => config('custom-id.users.character_set', config('custom-id.character_set')),
+            'max_attempts' => config('custom-id.max_attempts', 10),
+        ];
+
+        foreach ($usersWithoutCustomId as $user) {
+            $existingIds = array_values($this->idMapping);
+            $newId = $service->generate(
+                'user',
+                fn (string $id) => in_array($id, $existingIds),
+                $config
+            );
+            $this->idMapping[$user->id] = $newId;
+
+            DB::table('users')
+                ->where('id', $user->id)
+                ->update(['custom_id' => $newId]);
+        }
+    }
+
+    /**
+     * Generate a new ID for a user not in the mapping.
+     */
+    protected function generateNewIdForUser(int $oldId): string
+    {
+        $service = app(IdentificationService::class);
+        $config = [
+            'length' => config('custom-id.users.length', config('custom-id.default_length', 8)),
+            'prefix' => config('custom-id.users.prefix', config('custom-id.default_prefix', '')),
+            'character_set' => config('custom-id.users.character_set', config('custom-id.character_set')),
+            'max_attempts' => config('custom-id.max_attempts', 10),
+        ];
+
+        $existingIds = array_values($this->idMapping);
+        $newId = $service->generate(
+            'user',
+            fn (string $id) => in_array($id, $existingIds),
+            $config
+        );
+
+        $this->idMapping[$oldId] = $newId;
+
+        return $newId;
+    }
+
+    /**
+     * Update all related tables that reference users.id.
+     */
+    protected function updateRelatedTables(): void
+    {
+        $relatedTables = $this->getRelatedTables();
+
+        foreach ($relatedTables as $table => $config) {
+            if (! Schema::hasTable($table)) {
+                continue;
+            }
+
+            $column = $config['column'];
+            $isPolymorphic = $config['polymorphic'] ?? false;
+            $morphType = $config['morph_type'] ?? null;
+            $morphValue = $config['morph_value'] ?? 'App\\Models\\User';
+
+            if (! Schema::hasColumn($table, $column)) {
+                continue;
+            }
+
+            // Change column type to string if needed
+            $this->changeColumnToString($table, $column);
+
+            // Update the foreign key values
+            foreach ($this->idMapping as $oldId => $newId) {
+                $query = DB::table($table)->where($column, $oldId);
+
+                if ($isPolymorphic && $morphType) {
+                    $query->where($morphType, $morphValue);
+                }
+
+                $query->update([$column => $newId]);
+            }
+        }
+    }
+
+    /**
+     * Change a column from integer to string type.
+     */
+    protected function changeColumnToString(string $table, string $column): void
+    {
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'sqlite') {
+            // SQLite doesn't support ALTER COLUMN, but string values can be stored in integer columns
+            // The column will work as-is since SQLite uses dynamic typing
+            return;
+        }
+
+        // For MySQL and PostgreSQL, we need to alter the column type
+        try {
+            Schema::table($table, function (Blueprint $table) use ($column) {
+                $table->string($column, 36)->nullable()->change();
+            });
+        } catch (\Exception $e) {
+            // If change fails (e.g., due to doctrine/dbal not being installed),
+            // try raw SQL approach
+            if ($driver === 'mysql') {
+                DB::statement("ALTER TABLE {$table} MODIFY {$column} VARCHAR(36) NULL");
+            } elseif ($driver === 'pgsql') {
+                DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} TYPE VARCHAR(36)");
+            }
+        }
+    }
+
+    /**
+     * Get the list of related tables to update.
+     * Auto-detects common Laravel tables and merges with config.
+     */
+    protected function getRelatedTables(): array
+    {
+        // Common Laravel tables that may reference users
+        $commonTables = [
+            'sessions' => [
+                'column' => 'user_id',
+                'polymorphic' => false,
+            ],
+            'personal_access_tokens' => [
+                'column' => 'tokenable_id',
+                'polymorphic' => true,
+                'morph_type' => 'tokenable_type',
+                'morph_value' => 'App\\Models\\User',
+            ],
+            'notifications' => [
+                'column' => 'notifiable_id',
+                'polymorphic' => true,
+                'morph_type' => 'notifiable_type',
+                'morph_value' => 'App\\Models\\User',
+            ],
+            // Laravel Passport tables
+            'oauth_access_tokens' => [
+                'column' => 'user_id',
+                'polymorphic' => false,
+            ],
+            'oauth_auth_codes' => [
+                'column' => 'user_id',
+                'polymorphic' => false,
+            ],
+            'oauth_clients' => [
+                'column' => 'user_id',
+                'polymorphic' => false,
+            ],
+        ];
+
+        // Get additional tables from config
+        $configTables = config('custom-id.users_migration.related_tables', []);
+
+        return array_merge($commonTables, $configTables);
+    }
+
+    /**
+     * Reverse the migrations.
+     *
+     * WARNING: This will convert IDs back to auto-incrementing integers.
+     * The original integer IDs cannot be restored - new sequential IDs will be assigned.
+     * Related tables will NOT be automatically reverted.
+     */
+    public function down(): void
+    {
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'sqlite') {
+            $this->revertSqlite();
+        } else {
+            $this->revertDefault();
+        }
+
+        // Note: Related tables are not automatically reverted.
+        // Manual intervention is required to restore integer foreign keys.
+    }
+
+    /**
+     * Revert for MySQL/PostgreSQL.
+     */
+    protected function revertDefault(): void
+    {
+        $driver = DB::connection()->getDriverName();
+
+        // Add temporary integer column
+        Schema::table('users', function (Blueprint $table) {
+            $table->unsignedBigInteger('int_id')->nullable()->after('id');
+        });
+
+        // Assign new sequential IDs
+        $users = DB::table('users')->orderBy('created_at')->get();
+        $newId = 1;
+
+        foreach ($users as $user) {
+            DB::table('users')
+                ->where('id', $user->id)
+                ->update(['int_id' => $newId]);
+            $newId++;
+        }
+
+        // Drop old primary key
+        if ($driver === 'mysql') {
+            DB::statement('ALTER TABLE users DROP PRIMARY KEY');
+        } elseif ($driver === 'pgsql') {
+            DB::statement('ALTER TABLE users DROP CONSTRAINT users_pkey');
+        }
+
+        // Drop old id column
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropColumn('id');
+        });
+
+        // Rename int_id to id
+        Schema::table('users', function (Blueprint $table) {
+            $table->renameColumn('int_id', 'id');
+        });
+
+        // Add primary key and auto-increment
+        if ($driver === 'mysql') {
+            DB::statement('ALTER TABLE users MODIFY id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY');
+        } elseif ($driver === 'pgsql') {
+            // Create sequence and set it up
+            $maxId = DB::table('users')->max('id') ?? 0;
+            DB::statement('CREATE SEQUENCE IF NOT EXISTS users_id_seq');
+            DB::statement("SELECT setval('users_id_seq', " . ($maxId + 1) . ")");
+            DB::statement("ALTER TABLE users ALTER COLUMN id SET DEFAULT nextval('users_id_seq')");
+            DB::statement('ALTER TABLE users ADD PRIMARY KEY (id)');
+        }
+    }
+
+    /**
+     * Revert for SQLite.
+     */
+    protected function revertSqlite(): void
+    {
+        $columns = Schema::getColumnListing('users');
+
+        // Create temporary table with integer id
+        Schema::create('users_new', function (Blueprint $table) use ($columns) {
+            $table->id();
+
+            foreach ($columns as $column) {
+                if ($column === 'id') {
+                    continue;
+                }
+
+                $type = Schema::getColumnType('users', $column);
+
+                match ($type) {
+                    'string', 'text' => $table->string($column)->nullable(),
+                    'integer', 'bigint' => $table->bigInteger($column)->nullable(),
+                    'boolean' => $table->boolean($column)->nullable(),
+                    'datetime', 'timestamp' => $table->timestamp($column)->nullable(),
+                    default => $table->string($column)->nullable(),
+                };
+            }
+        });
+
+        // Copy data with new sequential IDs
+        $users = DB::table('users')->orderBy('created_at')->get();
+        $newId = 1;
+
+        foreach ($users as $user) {
+            $data = (array) $user;
+            $data['id'] = $newId++;
+
+            DB::table('users_new')->insert($data);
+        }
+
+        // Drop old table and rename new one
+        Schema::drop('users');
+        Schema::rename('users_new', 'users');
+    }
+};

@@ -134,6 +134,92 @@ protected function getCustomIdConfig(): ?array
 }
 ```
 
+## Converting Users Table to Custom IDs
+
+The package includes an optional migration to convert your existing `users` table from auto-incrementing integer IDs to custom string IDs.
+
+### Publish the Migration
+
+```bash
+php artisan vendor:publish --tag=custom-id-users-migration
+```
+
+This will create a timestamped migration in your `database/migrations` directory.
+
+### Configure the Migration
+
+Before running the migration, update your `config/custom-id.php`:
+
+```php
+'users' => [
+    'length' => 8,          // Custom ID length for users
+    'prefix' => '',         // Optional prefix (e.g., 'USR-')
+],
+
+'users_migration' => [
+    'related_tables' => [
+        // Add your custom tables that reference users.id
+        'posts' => [
+            'column' => 'user_id',
+            'polymorphic' => false,
+        ],
+        'comments' => [
+            'column' => 'author_id',
+            'polymorphic' => false,
+        ],
+        // For polymorphic relations
+        'activity_log' => [
+            'column' => 'causer_id',
+            'polymorphic' => true,
+            'morph_type' => 'causer_type',
+            'morph_value' => 'App\\Models\\User',
+        ],
+    ],
+],
+```
+
+### Auto-Detected Tables
+
+The migration automatically handles these common Laravel tables:
+- `sessions` (user_id)
+- `personal_access_tokens` (tokenable_id - polymorphic)
+- `notifications` (notifiable_id - polymorphic)
+- `oauth_access_tokens` (user_id)
+- `oauth_auth_codes` (user_id)
+- `oauth_clients` (user_id)
+
+### Run the Migration
+
+```bash
+php artisan migrate
+```
+
+### Update Your User Model
+
+Add the `HasCustomId` trait to your User model:
+
+```php
+use Aware\CustomId\Traits\HasCustomId;
+
+class User extends Authenticatable
+{
+    use HasCustomId;
+
+    protected function getCustomIdConfig(): ?array
+    {
+        return config('custom-id.users');
+    }
+}
+```
+
+### Important Notes
+
+1. **Backup your database** before running this migration
+2. **Test thoroughly** in a development environment first
+3. The migration supports MySQL, PostgreSQL, and SQLite
+4. Reverting the migration assigns new sequential integer IDs (original IDs cannot be restored)
+5. Related tables configured in the config will have their columns converted to string type
+
 ## Advanced Usage
 
 ### Soft Delete Awareness
