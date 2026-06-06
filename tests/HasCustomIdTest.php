@@ -1,8 +1,12 @@
 <?php
 
+use Aware\CustomId\Exceptions\CustomIdGenerationException;
+use Aware\CustomId\Services\IdentificationService;
 use Aware\CustomId\Traits\HasCustomId;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 beforeEach(function () {
@@ -103,6 +107,69 @@ it('gets correct custom id type from class name', function () {
     expect($type)->toBe('testmodel');
 });
 
+it('handles concurrent insert race condition with retry', function () {
+    $collisionId = 'collision-test-id';
+
+    DB::table('test_models')->insert([
+        'id' => $collisionId,
+        'name' => 'Pre-inserted collision',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $model = new RaceRetryModel();
+    $model->name = 'Test';
+    $model->setForcedId($collisionId);
+
+    $model->save();
+
+    expect($model->id)->toBeString();
+    expect($model->id)->not->toBe($collisionId);
+});
+
+it('throws CustomIdGenerationException after max retries on unique constraint violation', function () {
+    $collisionId = 'always-fail-id';
+
+    DB::table('test_models')->insert([
+        'id' => $collisionId,
+        'name' => 'Collision target',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $model = new RaceAlwaysFailModel();
+    $model->name = 'Test';
+    $model->setForcedId($collisionId);
+
+    expect(fn() => $model->save())->toThrow(CustomIdGenerationException::class);
+});
+
+it('correctly identifies unique constraint errors', function () {
+    $model = new TestModel();
+    $reflection = new ReflectionMethod($model, 'isUniqueConstraintError');
+    $reflection->setAccessible(true);
+
+    expect($reflection->invoke($model, new QueryException(
+        'sqlite', 'insert into test', [],
+        new \PDOException('UNIQUE constraint failed: test.id', 23000)
+    )))->toBeTrue();
+
+    expect($reflection->invoke($model, new QueryException(
+        'sqlite', 'insert into test', [],
+        new \PDOException('Duplicate entry for key', 23000)
+    )))->toBeTrue();
+
+    expect($reflection->invoke($model, new QueryException(
+        'mysql', 'insert into test', [],
+        new \PDOException('SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry', 23000)
+    )))->toBeTrue();
+
+    expect($reflection->invoke($model, new QueryException(
+        'sqlite', 'insert into test', [],
+        new \PDOException('SQLSTATE[HY000]: General error: 1 no such table', 1)
+    )))->toBeFalse();
+});
+
 class TestModel extends Model
 {
     use HasCustomId;
@@ -135,4 +202,66 @@ class SoftDeleteModel extends Model
 
     protected $table = 'soft_delete_models';
     protected $guarded = [];
+}
+
+class RaceRetryModel extends Model
+{
+    use HasCustomId;
+
+    protected $table = 'test_models';
+    protected $guarded = [];
+
+    protected ?string $forcedId = null;
+    protected bool $hasFailed = false;
+
+    public function setForcedId(string $id): void
+    {
+        $this->forcedId = $id;
+    }
+
+    protected function generateCustomId(): string
+    {
+        if ($this->forcedId !== null && !$this->hasFailed) {
+            $this->hasFailed = true;
+            return $this->forcedId;
+        }
+
+        $service = app(IdentificationService::class);
+
+        return $service->generate(
+            $this->getCustomIdType(),
+            fn (string $id) => $this->customIdExists($id),
+            $this->getCustomIdConfig()
+        );
+    }
+}
+
+class RaceAlwaysFailModel extends Model
+{
+    use HasCustomId;
+
+    protected $table = 'test_models';
+    protected $guarded = [];
+
+    protected ?string $forcedId = null;
+
+    public function setForcedId(string $id): void
+    {
+        $this->forcedId = $id;
+    }
+
+    protected function generateCustomId(): string
+    {
+        if ($this->forcedId !== null) {
+            return $this->forcedId;
+        }
+
+        $service = app(IdentificationService::class);
+
+        return $service->generate(
+            $this->getCustomIdType(),
+            fn (string $id) => $this->customIdExists($id),
+            $this->getCustomIdConfig()
+        );
+    }
 }

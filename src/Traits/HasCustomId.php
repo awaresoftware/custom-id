@@ -5,6 +5,7 @@ namespace Aware\CustomId\Traits;
 use Aware\CustomId\Exceptions\CustomIdGenerationException;
 use Aware\CustomId\Services\IdentificationService;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 
 trait HasCustomId
 {
@@ -63,6 +64,46 @@ trait HasCustomId
 
         // This should never be reached, but satisfies static analysis
         throw new CustomIdGenerationException($this->getCustomIdType(), $maxRetries);
+    }
+
+    /**
+     * Perform a model insert operation with retry for concurrent insert race conditions.
+     */
+    protected function performInsert(\Illuminate\Database\Eloquent\Builder $query): bool
+    {
+        $maxRetries = 3;
+        $attempt = 0;
+
+        while ($attempt < $maxRetries) {
+            try {
+                return parent::performInsert($query);
+            } catch (QueryException $e) {
+                if (!$this->isUniqueConstraintError($e)) {
+                    throw $e;
+                }
+
+                $attempt++;
+                if ($attempt >= $maxRetries) {
+                    throw new CustomIdGenerationException($this->getCustomIdType(), $maxRetries);
+                }
+
+                // Reset state so the creating event can re-run and regenerate the ID
+                $this->exists = false;
+                $this->wasRecentlyCreated = false;
+                $this->{$this->getKeyName()} = null;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Determine if a query exception is due to a unique constraint violation.
+     */
+    protected function isUniqueConstraintError(QueryException $e): bool
+    {
+        return str_contains(strtoupper($e->getMessage()), 'UNIQUE') ||
+            str_contains(strtoupper($e->getMessage()), 'DUPLICATE');
     }
 
     /**
