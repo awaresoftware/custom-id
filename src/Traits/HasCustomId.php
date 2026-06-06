@@ -23,6 +23,15 @@ trait HasCustomId
     }
 
     /**
+     * Initialize the trait.
+     */
+    public function initializeHasCustomId(): void
+    {
+        $this->incrementing = false;
+        $this->keyType = 'string';
+    }
+
+    /**
      * Get the model type for ID generation.
      * Override this method if your config key differs from the class name.
      */
@@ -137,19 +146,4 @@ trait HasCustomId
         return static::where($this->getKeyName(), $id)->exists();
     }
 
-    /**
-     * Indicates if the IDs are auto-incrementing.
-     */
-    public function getIncrementing(): bool
-    {
-        return false;
-    }
-
-    /**
-     * Get the data type of the primary key.
-     */
-    public function getKeyType(): string
-    {
-        return 'string';
-    }
 }
