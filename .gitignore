@@ -1,4 +1,6 @@
-/vendor/                                                                                                                                                 
-composer.lock                                                                                                                                            
-.phpunit.result.cache                                                                                                                                    
-.DS_Store 
+/vendor/
+composer.lock
+.phpunit.result.cache
+.pint.cache
+.phpstan.cache
+.DS_Store

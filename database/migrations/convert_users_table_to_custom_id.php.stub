@@ -15,17 +15,18 @@ return new class extends Migration
 
     /**
      * Run the migrations.
+     *
+     * Wrapped in a transaction where the database driver supports it.
+     * MySQL/InnoDB will implicitly commit on DDL statements, so partial
+     * migration state is still possible on MySQL.
      */
     public function up(): void
     {
-        // Build the ID mapping for existing users
-        $this->buildIdMapping();
-
-        // Update the users table
-        $this->convertUsersTable();
-
-        // Update related tables with foreign keys
-        $this->updateRelatedTables();
+        DB::transaction(function () {
+            $this->buildIdMapping();
+            $this->convertUsersTable();
+            $this->updateRelatedTables();
+        });
     }
 
     /**
@@ -35,13 +36,7 @@ return new class extends Migration
     {
         $service = app(IdentificationService::class);
         $users = DB::table('users')->select('id')->get();
-
-        $config = [
-            'length' => config('custom-id.users.length', config('custom-id.default_length', 8)),
-            'prefix' => config('custom-id.users.prefix', config('custom-id.default_prefix', '')),
-            'character_set' => config('custom-id.users.character_set', config('custom-id.character_set')),
-            'max_attempts' => config('custom-id.max_attempts', 10),
-        ];
+        $config = $this->getUserIdConfig();
 
         $existingIds = [];
 
@@ -150,6 +145,9 @@ return new class extends Migration
                     'integer', 'bigint' => $table->bigInteger($column)->nullable(),
                     'boolean' => $table->boolean($column)->nullable(),
                     'datetime', 'timestamp' => $table->timestamp($column)->nullable(),
+                    'date' => $table->date($column)->nullable(),
+                    'float', 'double', 'decimal' => $table->decimal($column)->nullable(),
+                    'json' => $table->json($column)->nullable(),
                     default => $table->string($column)->nullable(),
                 };
             }
@@ -172,6 +170,19 @@ return new class extends Migration
     }
 
     /**
+     * Build the configuration array for user ID generation.
+     */
+    protected function getUserIdConfig(): array
+    {
+        return [
+            'length' => config('custom-id.users.length', config('custom-id.default_length', 8)),
+            'prefix' => config('custom-id.users.prefix', config('custom-id.default_prefix', '')),
+            'character_set' => config('custom-id.users.character_set', config('custom-id.character_set')),
+            'max_attempts' => config('custom-id.max_attempts', 10),
+        ];
+    }
+
+    /**
      * Fill in custom IDs for any users that weren't in the initial mapping.
      */
     protected function fillMissingCustomIds(): void
@@ -183,12 +194,7 @@ return new class extends Migration
         }
 
         $service = app(IdentificationService::class);
-        $config = [
-            'length' => config('custom-id.users.length', config('custom-id.default_length', 8)),
-            'prefix' => config('custom-id.users.prefix', config('custom-id.default_prefix', '')),
-            'character_set' => config('custom-id.users.character_set', config('custom-id.character_set')),
-            'max_attempts' => config('custom-id.max_attempts', 10),
-        ];
+        $config = $this->getUserIdConfig();
 
         foreach ($usersWithoutCustomId as $user) {
             $existingIds = array_values($this->idMapping);
@@ -211,12 +217,7 @@ return new class extends Migration
     protected function generateNewIdForUser(int $oldId): string
     {
         $service = app(IdentificationService::class);
-        $config = [
-            'length' => config('custom-id.users.length', config('custom-id.default_length', 8)),
-            'prefix' => config('custom-id.users.prefix', config('custom-id.default_prefix', '')),
-            'character_set' => config('custom-id.users.character_set', config('custom-id.character_set')),
-            'max_attempts' => config('custom-id.max_attempts', 10),
-        ];
+        $config = $this->getUserIdConfig();
 
         $existingIds = array_values($this->idMapping);
         $newId = $service->generate(
@@ -245,7 +246,7 @@ return new class extends Migration
             $column = $config['column'];
             $isPolymorphic = $config['polymorphic'] ?? false;
             $morphType = $config['morph_type'] ?? null;
-            $morphValue = $config['morph_value'] ?? 'App\\Models\\User';
+            $morphValue = $config['morph_value'] ?? $this->getUserMorphType();
 
             if (! Schema::hasColumn($table, $column)) {
                 continue;
@@ -296,6 +297,20 @@ return new class extends Migration
     }
 
     /**
+     * Get the morph type for the User model from configuration.
+     */
+    protected function getUserMorphType(): string
+    {
+        $userModel = config('auth.providers.users.model');
+
+        if (class_exists($userModel)) {
+            return $userModel;
+        }
+
+        return 'App\\Models\\User';
+    }
+
+    /**
      * Get the list of related tables to update.
      * Auto-detects common Laravel tables and merges with config.
      */
@@ -311,13 +326,11 @@ return new class extends Migration
                 'column' => 'tokenable_id',
                 'polymorphic' => true,
                 'morph_type' => 'tokenable_type',
-                'morph_value' => 'App\\Models\\User',
             ],
             'notifications' => [
                 'column' => 'notifiable_id',
                 'polymorphic' => true,
                 'morph_type' => 'notifiable_type',
-                'morph_value' => 'App\\Models\\User',
             ],
             // Laravel Passport tables
             'oauth_access_tokens' => [
@@ -384,11 +397,11 @@ return new class extends Migration
             $newId++;
         }
 
-        // Drop old primary key
+            // Drop old primary key (disable FK checks first on MySQL)
         if ($driver === 'mysql') {
-            DB::statement('SET FOREIGN_KEY_CHECKS = 0');
+            DB::statement('SET FOREIGN_KEY_CHECKS=0');
             DB::statement('ALTER TABLE users DROP PRIMARY KEY');
-            DB::statement('SET FOREIGN_KEY_CHECKS = 1');
+            DB::statement('SET FOREIGN_KEY_CHECKS=1');
         } elseif ($driver === 'pgsql') {
             DB::statement('ALTER TABLE users DROP CONSTRAINT users_pkey');
         }
@@ -439,6 +452,9 @@ return new class extends Migration
                     'integer', 'bigint' => $table->bigInteger($column)->nullable(),
                     'boolean' => $table->boolean($column)->nullable(),
                     'datetime', 'timestamp' => $table->timestamp($column)->nullable(),
+                    'date' => $table->date($column)->nullable(),
+                    'float', 'double', 'decimal' => $table->decimal($column)->nullable(),
+                    'json' => $table->json($column)->nullable(),
                     default => $table->string($column)->nullable(),
                 };
             }

@@ -3,6 +3,7 @@
 namespace Aware\CustomId\Services;
 
 use Aware\CustomId\Exceptions\CustomIdGenerationException;
+use InvalidArgumentException;
 
 class IdentificationService
 {
@@ -15,6 +16,7 @@ class IdentificationService
      *                              ['length' => int, 'prefix' => string, 'character_set' => string, 'max_attempts' => int]
      *
      * @throws CustomIdGenerationException
+     * @throws InvalidArgumentException
      */
     public function generate(string $modelType, callable $existsCallback, ?array $config = null): string
     {
@@ -23,13 +25,7 @@ class IdentificationService
         $characterSet = $config['character_set'] ?? config('custom-id.character_set');
         $maxAttempts = $config['max_attempts'] ?? config('custom-id.max_attempts', 10);
 
-        if ($length <= 0) {
-            throw new CustomIdGenerationException($modelType, 0, "ID length must be greater than 0");
-        }
-
-        if (strlen($characterSet) === 0) {
-            throw new CustomIdGenerationException($modelType, 0, "Character set must not be empty");
-        }
+        $this->validateConfig($length, $characterSet, $maxAttempts, $modelType);
 
         $attempts = 0;
 
@@ -37,7 +33,6 @@ class IdentificationService
             $id = $this->generateRandomString($characterSet, $length);
             $fullId = $prefix.$id;
 
-            // Check if ID already exists
             if (! $existsCallback($fullId)) {
                 return $fullId;
             }
@@ -49,15 +44,41 @@ class IdentificationService
     }
 
     /**
+     * Validate configuration values to prevent runtime errors.
+     *
+     * @throws InvalidArgumentException
+     */
+    protected function validateConfig(int $length, string $characterSet, int $maxAttempts, string $modelType): void
+    {
+        if ($length < 1) {
+            throw new InvalidArgumentException(
+                "ID length must be at least 1 for [{$modelType}], got [{$length}]."
+            );
+        }
+
+        if (mb_strlen($characterSet) < 2) {
+            throw new InvalidArgumentException(
+                "Character set must contain at least 2 characters for [{$modelType}]."
+            );
+        }
+
+        if ($maxAttempts < 1) {
+            throw new InvalidArgumentException(
+                "Max attempts must be at least 1 for [{$modelType}], got [{$maxAttempts}]."
+            );
+        }
+    }
+
+    /**
      * Generate a random string from the character set.
      */
     protected function generateRandomString(string $characterSet, int $length): string
     {
-        $charactersLength = strlen($characterSet);
+        $charactersLength = mb_strlen($characterSet);
         $randomString = '';
 
         for ($i = 0; $i < $length; $i++) {
-            $randomString .= $characterSet[random_int(0, $charactersLength - 1)];
+            $randomString .= mb_substr($characterSet, random_int(0, $charactersLength - 1), 1);
         }
 
         return $randomString;
