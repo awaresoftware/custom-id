@@ -95,9 +95,14 @@ return new class extends Migration
 
         // Drop the old primary key
         if ($driver === 'mysql') {
-            // MySQL: Remove auto_increment first, then drop primary
+            // MySQL: Disable foreign key checks before dropping primary key
+            DB::statement('SET FOREIGN_KEY_CHECKS = 0');
+
+            // Remove auto_increment first, then drop primary
             DB::statement('ALTER TABLE users MODIFY id BIGINT UNSIGNED NOT NULL');
             DB::statement('ALTER TABLE users DROP PRIMARY KEY');
+
+            DB::statement('SET FOREIGN_KEY_CHECKS = 1');
         } elseif ($driver === 'pgsql') {
             // PostgreSQL: Drop the primary key constraint
             DB::statement('ALTER TABLE users DROP CONSTRAINT users_pkey');
@@ -382,7 +387,9 @@ return new class extends Migration
 
         // Drop old primary key
         if ($driver === 'mysql') {
+            DB::statement('SET FOREIGN_KEY_CHECKS = 0');
             DB::statement('ALTER TABLE users DROP PRIMARY KEY');
+            DB::statement('SET FOREIGN_KEY_CHECKS = 1');
         } elseif ($driver === 'pgsql') {
             DB::statement('ALTER TABLE users DROP CONSTRAINT users_pkey');
         }
