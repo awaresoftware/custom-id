@@ -285,9 +285,8 @@ return new class extends Migration
             Schema::table($table, function (Blueprint $table) use ($column) {
                 $table->string($column, 36)->nullable()->change();
             });
-        } catch (\Exception $e) {
-            // If change fails (e.g., due to doctrine/dbal not being installed),
-            // try raw SQL approach
+        } catch (\BadMethodCallException $e) {
+            // Schema::change() requires doctrine/dbal; if unavailable, fall back to raw SQL
             if ($driver === 'mysql') {
                 DB::statement("ALTER TABLE {$table} MODIFY {$column} VARCHAR(36) NULL");
             } elseif ($driver === 'pgsql') {
