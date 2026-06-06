@@ -138,3 +138,21 @@ it('combines prefix and random string correctly', function () {
 
     expect($id)->toMatch('/^ORD-[A-Z]{6}$/');
 });
+
+it('throws exception when length is 0', function () {
+    $service = new IdentificationService();
+
+    $service->generate('test', fn () => false, ['length' => 0]);
+})->throws(CustomIdGenerationException::class, 'ID length must be greater than 0');
+
+it('throws exception when length is negative', function () {
+    $service = new IdentificationService();
+
+    $service->generate('test', fn () => false, ['length' => -5]);
+})->throws(CustomIdGenerationException::class, 'ID length must be greater than 0');
+
+it('throws exception when character set is empty', function () {
+    $service = new IdentificationService();
+
+    $service->generate('test', fn () => false, ['character_set' => '']);
+})->throws(CustomIdGenerationException::class, 'Character set must not be empty');

@@ -23,6 +23,14 @@ class IdentificationService
         $characterSet = $config['character_set'] ?? config('custom-id.character_set');
         $maxAttempts = $config['max_attempts'] ?? config('custom-id.max_attempts', 10);
 
+        if ($length <= 0) {
+            throw new CustomIdGenerationException($modelType, 0, "ID length must be greater than 0");
+        }
+
+        if (strlen($characterSet) === 0) {
+            throw new CustomIdGenerationException($modelType, 0, "Character set must not be empty");
+        }
+
         $attempts = 0;
 
         while ($attempts < $maxAttempts) {
