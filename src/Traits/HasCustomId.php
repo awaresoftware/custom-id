@@ -6,6 +6,7 @@ use Aware\CustomId\Exceptions\CustomIdGenerationException;
 use Aware\CustomId\Services\IdentificationService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 trait HasCustomId
 {
@@ -129,7 +130,7 @@ trait HasCustomId
     protected function customIdExists(string $id): bool
     {
         // Include soft-deleted records if model uses SoftDeletes
-        if (method_exists(static::class, 'withTrashed')) {
+        if (trait_uses_recursive(static::class) !== null && in_array(SoftDeletes::class, trait_uses_recursive(static::class))) {
             return static::withTrashed()->where($this->getKeyName(), $id)->exists();
         }
 
