@@ -7,7 +7,7 @@ A Laravel package for generating unique custom IDs with configurable character s
 - 🎲 **Configurable ID generation** - Set length, prefix, and character set per model
 - 🔒 **Collision detection** - Automatic retry mechanism with configurable attempts
 - 🗑️ **Soft-delete aware** - Prevents ID reuse from soft-deleted records
-- 🚀 **Race condition handling** - Built-in retry logic for concurrent requests
+- 🚀 **Race condition handling** - Retries on unique constraint violations from concurrent inserts
 - 🎯 **Simple API** - Just use a trait and implement one method
 - 📝 **Custom exceptions** - Detailed error information for debugging
 - ⚡ **Zero dependencies** - Only requires `illuminate/support`
@@ -15,7 +15,7 @@ A Laravel package for generating unique custom IDs with configurable character s
 ## Installation
 
 ```bash
-composer require aware/custom-id
+composer require awaresoftware/custom-id
 ```
 
 ## Quick Start
@@ -80,7 +80,11 @@ Publish the config file:
 php artisan vendor:publish --tag=custom-id-config
 ```
 
-### Global Defaults
+Or publish everything at once (config + migration):
+
+```bash
+php artisan vendor:publish --tag=custom-id
+```
 
 Edit `config/custom-id.php`:
 
@@ -239,16 +243,24 @@ class Event extends Model
 
 ### Race Condition Handling
 
-Built-in retry mechanism handles concurrent ID generation:
+Two-phase approach separates collision detection from race condition handling:
 
-```php
-// Automatically retries up to 3 times if generation fails
-// due to race conditions or collisions
+1. **Collision detection** — The service checks existing records (including soft-deleted) before assigning an ID
+2. **Concurrent inserts** — `performInsert()` catches `UniqueConstraintViolationException` and regenerates the ID, retrying up to 3 times
+
+```
+creating event → generateCustomId() → check exists → assign ID
+                                       ↓ (collision)
+                                  regenerate ID
+
+performInsert() → INSERT
+                  ↓ (unique constraint violation from concurrent request)
+            regenerate ID → retry INSERT (up to 3 times)
 ```
 
 ### Custom Exception Handling
 
-Catch generation failures with detailed context:
+**Generation failures** — after exhausting all retry attempts:
 
 ```php
 use Aware\CustomId\Exceptions\CustomIdGenerationException;
@@ -259,6 +271,20 @@ try {
     echo $e->modelType;  // "my_model"
     echo $e->attempts;   // 10
     echo $e->getMessage(); // "Failed to generate unique ID for my_model after 10 attempts"
+}
+```
+
+**Configuration errors** — invalid config values throw `InvalidArgumentException`:
+
+```php
+use InvalidArgumentException;
+
+try {
+    $model = MyModel::create($data);
+} catch (InvalidArgumentException $e) {
+    // "ID length must be at least 1 for [my_model], got [0]."
+    // "Character set must contain at least 2 characters for [my_model]."
+    // "Max attempts must be at least 1 for [my_model], got [0]."
 }
 ```
 
