@@ -1,5 +1,5 @@
 {
-    "name": "awaresoftware/custom-id",
+    "name": "aware/custom-id",
     "description": "A Laravel package for generating unique custom IDs with configurable character sets, lengths, and prefixes",
     "type": "library",
     "license": "MIT",
